@@ -24,7 +24,7 @@ def get_a_var(obj):
                 return result
     return None
 
-def parallel_apply(processes, in_queues, out_queues, events, modules, inputs,
+def parallel_apply(processes, pipes, modules, inputs,
                    kwargs_tup=None, devices=None):
     assert len(modules) == len(inputs)
     if kwargs_tup is not None:
@@ -40,17 +40,11 @@ def parallel_apply(processes, in_queues, out_queues, events, modules, inputs,
 
     if len(modules) > 1:
         t0 = datetime.datetime.now()
-        args = zip(in_queues, modules, inputs, kwargs_tup, devices)
-        [threading.Thread(target=lambda x: x[0].put(x[1:]), args=[x]).start() for x in args]
+        args = zip(pipes, modules, inputs, kwargs_tup, devices)
+        [x[0][0].send(x[1:]) for x in args]
         t1 = datetime.datetime.now()
-        #[e.set() for e in events]
         t2 = datetime.datetime.now()
-        threads = [threading.Thread(target=lambda x: results.__setitem__(x,
-                                                               out_queues[x].get()),
-                         args=[i])
-         for i in range(len(modules))]
-        [t.start() for t in threads]
-        [t.join() for t in threads]
+        results = {i: pipes[i][0].recv() for i in range(len(modules))}
         t3 = datetime.datetime.now()
         print("[parallel_apply]",
               "put", str(t1 - t0)[5:10],

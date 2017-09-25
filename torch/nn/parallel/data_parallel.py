@@ -9,17 +9,17 @@ from .scatter_gather import scatter_kwargs, gather
 from .replicate import replicate
 from .parallel_apply import parallel_apply
 
-def parallel_worker(in_queue, out_queue, event):
+def parallel_worker(conn):
     try:
         while True:
-            #event.wait()
+            conn.poll(None)
             t0 = datetime.datetime.now()
-            module, args, kwargs, device = in_queue.get()
+            module, args, kwargs, device = conn.recv()
             t1 = datetime.datetime.now()
             with torch.cuda.device(device):
                 y = module(*args, **kwargs)
             t2 = datetime.datetime.now()
-            out_queue.put(y)
+            conn.send(y)
             print("[parallel_worker]",
                   "get", str(t1 - t0)[5:10],
                   "module", str(t2 - t1)[5:10],
@@ -29,11 +29,10 @@ def parallel_worker(in_queue, out_queue, event):
             args = None
             kwargs = None
             y = None
-            event.clear()
 
     except Exception as e:
         traceback.print_exc()
-        out_queue.put(y)
+        conn.send(e)
 
 class DataParallel(Module):
     """Implements data parallelism at the module level.
@@ -84,14 +83,12 @@ class DataParallel(Module):
 
         ctx = mp.get_context("spawn")
         n_devices = len(self.device_ids)
-        self.in_queues = tuple(ctx.Queue() for _ in range(n_devices))
-        self.out_queues = tuple(ctx.Queue() for _ in range(n_devices))
-        self.events = tuple(ctx.Event() for _ in range(n_devices))
+        self.pipes = tuple(ctx.Pipe() for _ in range(n_devices))
         self.processes = []
         for i in range(n_devices):
             process = ctx.Process(target=parallel_worker,
-                                  args=(self.in_queues[i], self.out_queues[i],
-                                        self.events[i]))
+                                  args=(self.pipes[i][1],))
+            process.daemon = True
             process.start()
             self.processes.append(process)
 
@@ -123,8 +120,7 @@ class DataParallel(Module):
         return scatter_kwargs(inputs, kwargs, device_ids, dim=self.dim)
 
     def parallel_apply(self, replicas, inputs, kwargs):
-        return parallel_apply(self.processes, self.in_queues, self.out_queues,
-                              self.events, replicas, inputs, kwargs,
+        return parallel_apply(self.processes, self.pipes, replicas, inputs, kwargs,
                               self.device_ids[:len(replicas)])
 
     def gather(self, outputs, output_device):
