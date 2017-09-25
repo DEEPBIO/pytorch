@@ -1,8 +1,8 @@
-import time
 import datetime
+import pdb
+import time
 import traceback
-import queue
-import threading
+
 import torch
 import torch.multiprocessing
 from torch.autograd import Variable
@@ -39,18 +39,8 @@ def parallel_apply(processes, pipes, modules, inputs,
     results = {}
 
     if len(modules) > 1:
-        t0 = datetime.datetime.now()
-        args = zip(pipes, modules, inputs, kwargs_tup, devices)
-        [x[0][0].send(x[1:]) for x in args]
-        t1 = datetime.datetime.now()
-        t2 = datetime.datetime.now()
+        [x[0][0].send(x[1:]) for x in zip(pipes, modules, inputs, kwargs_tup)]
         results = {i: pipes[i][0].recv() for i in range(len(modules))}
-        t3 = datetime.datetime.now()
-        print("[parallel_apply]",
-              "put", str(t1 - t0)[5:10],
-              "set", str(t2 - t1)[5:10],
-              "get", str(t3 - t2)[5:10],
-              "total", str(datetime.datetime.now() - t0)[5:10])
 
     else:
         _worker(0, modules[0], inputs[0], kwargs_tup[0], results, lock, devices[0])

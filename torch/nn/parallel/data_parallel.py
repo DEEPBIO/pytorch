@@ -1,7 +1,8 @@
-import time
 import datetime
+import pdb
+import time
 import traceback
-from multiprocessing.managers import SyncManager
+
 import torch
 import torch.multiprocessing as mp
 from ..modules import Module
@@ -9,26 +10,19 @@ from .scatter_gather import scatter_kwargs, gather
 from .replicate import replicate
 from .parallel_apply import parallel_apply
 
-def parallel_worker(conn):
+def parallel_worker(conn, device):
     try:
-        while True:
-            conn.poll(None)
-            t0 = datetime.datetime.now()
-            module, args, kwargs, device = conn.recv()
-            t1 = datetime.datetime.now()
-            with torch.cuda.device(device):
+        with torch.cuda.device(device):
+            while True:
+                conn.poll(None)
+                module, args, kwargs = conn.recv()
                 y = module(*args, **kwargs)
-            t2 = datetime.datetime.now()
-            conn.send(y)
-            print("[parallel_worker]",
-                  "get", str(t1 - t0)[5:10],
-                  "module", str(t2 - t1)[5:10],
-                  "put", str(datetime.datetime.now() - t2)[5:10])
+                conn.send(y)
 
-            module = None
-            args = None
-            kwargs = None
-            y = None
+                module = None
+                args = None
+                kwargs = None
+                y = None
 
     except Exception as e:
         traceback.print_exc()
@@ -83,35 +77,22 @@ class DataParallel(Module):
 
         ctx = mp.get_context("spawn")
         n_devices = len(self.device_ids)
-        self.pipes = tuple(ctx.Pipe() for _ in range(n_devices))
-        self.processes = []
+        self._pipes = tuple(ctx.Pipe() for _ in range(n_devices))
+        self._processes = []
         for i in range(n_devices):
             process = ctx.Process(target=parallel_worker,
-                                  args=(self.pipes[i][1],))
+                                  args=(self._pipes[i][1], i))
             process.daemon = True
             process.start()
-            self.processes.append(process)
+            self._processes.append(process)
 
     def forward(self, *inputs, **kwargs):
-        t0 = datetime.datetime.now()
         inputs, kwargs = self.scatter(inputs, kwargs, self.device_ids)
-        t1 = datetime.datetime.now()
         if len(self.device_ids) == 1:
             return self.module(*inputs[0], **kwargs[0])
         replicas = self.replicate(self.module, self.device_ids[:len(inputs)])
-        t2 = datetime.datetime.now()
         outputs = self.parallel_apply(replicas, inputs, kwargs)
-        t3 = datetime.datetime.now()
-        out = self.gather(outputs, self.output_device)
-        t4 = datetime.datetime.now()
-        print("[forward]",
-              "scatter", str(t1 - t0)[5:10],
-              "replicate", str(t2 - t1)[5:10],
-              "parallel_apply", str(t3 - t2)[5:10],
-              "gather", str(t4 - t3)[5:10],
-              "total", str(datetime.datetime.now() - t0)[5:10])
-
-        return out
+        return self.gather(outputs, self.output_device)
 
     def replicate(self, module, device_ids):
         return replicate(module, device_ids)
@@ -120,7 +101,7 @@ class DataParallel(Module):
         return scatter_kwargs(inputs, kwargs, device_ids, dim=self.dim)
 
     def parallel_apply(self, replicas, inputs, kwargs):
-        return parallel_apply(self.processes, self.pipes, replicas, inputs, kwargs,
+        return parallel_apply(self._processes, self._pipes, replicas, inputs, kwargs,
                               self.device_ids[:len(replicas)])
 
     def gather(self, outputs, output_device):
